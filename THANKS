@@ -1,0 +1,16 @@
+Thanks to David Raufeisen for this post:
+http://mail.gnome.org/archives/gtk-list/2000-January/msg00072.html
+which helped me learn how to make a gtk+ dockapp.
+
+Thanks to wbk <coydog@coydogsoftware.net> for the suggestion to add an argument
+for not storing the notes.
+
+Thanks to Moritz <thinksilicon@users.sf.net> for a patch to properly set the
+wmhints for the icon window.
+
+Thanks to Doug Torrance <dtorrance@monmouthcollege.edu> for creating a man page
+and for patches to fix the icon window size and to add some failure checks.
+
+Thanks to Andreas Tscharner <andy@vis.ethz.ch> for suggesting the ability to
+restore notes to previous workspaces and for pointing out a bug.
+
