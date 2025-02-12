@@ -41,6 +41,7 @@ int store_notes = TRUE;
 /* The current note that the popup menu was shown for */
 Note *current_note;
 
+/* List of all notes, plus a toggle for visibility */
 static GList *all_notes = NULL;
 static gboolean notes_visible = TRUE;
 
@@ -55,26 +56,31 @@ void usage()
   printf("        -h, --help                     Print usage\n");
 }
 
+/* ------------------------------------------------------------------------- *
+ * Toggle the visibility of all existing notes. Under Window Maker, it often
+ * helps to map the note FIRST, then set workspace, then move/resize.
+ * ------------------------------------------------------------------------- */
 static void toggle_notes_visibility(void)
 {
-    // Flip the global boolean
     notes_visible = !notes_visible;
 
-    // Go through our global list of notes
     for (GList *l = all_notes; l != NULL; l = l->next) {
         Note *n = (Note *)l->data;
         if (!n) continue;
 
         if (notes_visible) {
-            // Show the note window again
+            /* 1) Show (map) the note first */
             gtk_widget_show(n->window);
 
-            // Make sure the note reappears on the correct workspace
+            /* 2) Then set the workspace (Window Maker may need this after mapping) */
             set_workspace(GDK_WINDOW_XDISPLAY(n->window->window),
                           GDK_WINDOW_XID(n->window->window),
                           n->workspace);
+
+            /* 3) Finally, restore exact geometry (x, y, width, height) */
+            gtk_window_move(GTK_WINDOW(n->window), n->x, n->y);
+            gtk_window_resize(GTK_WINDOW(n->window), n->width, n->height);
         } else {
-            // Hide the note window
             gtk_widget_hide(n->window);
         }
     }
@@ -106,7 +112,8 @@ int main(int argc, char *argv[])
     {"directory", required_argument, 0, 'd'},
     {"version", no_argument, 0, 'v'},
     {"help", no_argument, 0, 'h'},
-    {0, 0, 0, 0}};
+    {0, 0, 0, 0}
+  };
 
   while((i = getopt_long(argc, argv, "nd:vh", long_options, &option_index)) > -1) {
     switch(i) {
@@ -173,12 +180,15 @@ int main(int argc, char *argv[])
   gtk_window_set_default_size(GTK_WINDOW(window), 48, 48);
 
   box = gtk_event_box_new();
-  gtk_container_add(GTK_CONTAINER (window), box);
+  gtk_container_add(GTK_CONTAINER(window), box);
 
   gdk_color_parse ("#fafafa", &color);
   gtk_widget_modify_bg(box, GTK_STATE_NORMAL, &color);
 
-  main_button_pixmap = gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap, &main_button_mask, NULL, wmstickynotes_xpm);
+  main_button_pixmap =
+    gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap,
+                                          &main_button_mask, NULL,
+                                          wmstickynotes_xpm);
   main_button = gtk_image_new_from_pixmap(main_button_pixmap, main_button_mask);
   main_button_box = gtk_event_box_new();
   gtk_container_add(GTK_CONTAINER(main_button_box), main_button);
@@ -202,7 +212,9 @@ int main(int argc, char *argv[])
     gtk_box_pack_start(GTK_BOX(hbox), label, TRUE, TRUE, 0);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(color_menu), item);
-    g_signal_connect(G_OBJECT(item), "activate", G_CALLBACK(new_note_from_menu), &color_schemes[i]);
+    g_signal_connect(G_OBJECT(item), "activate",
+                     G_CALLBACK(new_note_from_menu),
+                     &color_schemes[i]);
   }
 
   gtk_widget_show_all(GTK_WIDGET(color_menu));
@@ -215,16 +227,19 @@ int main(int argc, char *argv[])
   mywmhints.flags = IconWindowHint | StateHint;
   mywmhints.initial_state = WithdrawnState;
 
-  XSetWMHints(GDK_WINDOW_XDISPLAY(window->window), GDK_WINDOW_XID(window->window), &mywmhints);
+  XSetWMHints(GDK_WINDOW_XDISPLAY(window->window),
+              GDK_WINDOW_XID(window->window),
+              &mywmhints);
 
   g_signal_connect(G_OBJECT(window), "destroy", G_CALLBACK(gtk_main_quit), NULL);
-  g_signal_connect(G_OBJECT(main_button_box), "button-press-event", G_CALLBACK(main_button_pressed), color_menu);
+  g_signal_connect(G_OBJECT(main_button_box), "button-press-event",
+                   G_CALLBACK(main_button_pressed), color_menu);
 
   if(store_notes) {
     read_old_notes();
   }
-  gtk_main();
 
+  gtk_main();
   return 0;
 }
 
@@ -235,8 +250,10 @@ void delete_note(GtkWidget *widget, Note *note)
   if(store_notes) {
     asprintf(&filename, "%d", note->id);
     if(unlink(filename)) {
-      fprintf(stderr, "Error deleting note file '%s'.  errno: %d\n", filename, errno);
+      fprintf(stderr, "Error deleting note file '%s'.  errno: %d\n",
+              filename, errno);
     }
+    free(filename);
   }
 
   free(note);
@@ -255,12 +272,14 @@ int get_workspace(Display *disp, Window win)
   prop_name = XInternAtom(disp, "_NET_WM_DESKTOP", False);
   if(XGetWindowProperty(disp, win, prop_name, 0, 1, False, XA_CARDINAL,
                         &ret_type, &ret_format, &ret_nitems,
-                        &ret_bytes_after, &ret_prop) != Success) {
+                        &ret_bytes_after, &ret_prop) != Success)
+  {
     prop_name = XInternAtom(disp, "_WIN_WORKSPACE", False);
     if(XGetWindowProperty(disp, win, prop_name, 0, 1, False,
                           XA_CARDINAL, &ret_type, &ret_format,
                           &ret_nitems, &ret_bytes_after,
-                          &ret_prop) != Success) {
+                          &ret_prop) != Success)
+    {
       return 0;
     }
   }
@@ -285,20 +304,45 @@ int get_workspace(Display *disp, Window win)
   return workspace;
 }
 
+/*
+ * Modified version of set_workspace:
+ *  - We still send the _NET_WM_DESKTOP message
+ *  - We also set the older _WIN_WORKSPACE property,
+ *    which Window Maker sometimes requires.
+ */
 int set_workspace(Display *disp, Window win, int workspace)
 {
-  XEvent event;
-  long int mask = SubstructureRedirectMask | SubstructureNotifyMask;
+  /* 1) Send _NET_WM_DESKTOP client message */
+  {
+    XEvent event;
+    long int mask = SubstructureRedirectMask | SubstructureNotifyMask;
 
-  event.xclient.type = ClientMessage;
-  event.xclient.serial = 0;
-  event.xclient.send_event = True;
-  event.xclient.message_type = XInternAtom(disp, "_NET_WM_DESKTOP", False);
-  event.xclient.window = win;
-  event.xclient.format = 32;
-  event.xclient.data.l[0] = workspace;
+    memset(&event, 0, sizeof(event));
+    event.xclient.type = ClientMessage;
+    event.xclient.send_event = True;
+    event.xclient.message_type = XInternAtom(disp, "_NET_WM_DESKTOP", False);
+    event.xclient.window = win;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = workspace;
+    event.xclient.data.l[1] = CurrentTime;
 
-  return XSendEvent(disp, DefaultRootWindow(disp), False, mask, &event);
+    XSendEvent(disp, DefaultRootWindow(disp), False, mask, &event);
+    XFlush(disp);
+  }
+
+  /* 2) Also set _WIN_WORKSPACE (older property for Window Maker) */
+  {
+    Atom a = XInternAtom(disp, "_WIN_WORKSPACE", False);
+    if (a != None) {
+      unsigned long ws = (unsigned long) workspace;
+      XChangeProperty(disp, win, a, XA_CARDINAL, 32,
+                      PropModeReplace,
+                      (unsigned char *)&ws, 1);
+      XFlush(disp);
+    }
+  }
+
+  return 0; /* Not returning success/failure now */
 }
 
 void save_note(GtkWidget *widget, Note *note)
@@ -317,7 +361,6 @@ void save_note(GtkWidget *widget, Note *note)
   text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(note->text_widget));
   gtk_text_buffer_get_start_iter(text_buffer, &start);
   gtk_text_buffer_get_end_iter(text_buffer, &end);
-
   text = gtk_text_buffer_get_text(text_buffer, &start, &end, FALSE);
 
   asprintf(&filename, "%d", note->id);
@@ -327,13 +370,15 @@ void save_note(GtkWidget *widget, Note *note)
     if(fprintf(file, "%d,%d,%d,%d,%d,%d,%s\n%s",
                note->x, note->y, note->width, note->height,
                note->workspace, 0, note->scheme->name,
-               text)
-       < 0) {
-      fprintf(stderr, "Error writing to note file '%s'.  errno: %d\n", filename, errno);
+               text) < 0)
+    {
+      fprintf(stderr, "Error writing to note file '%s'.  errno: %d\n",
+              filename, errno);
     }
     fclose(file);
   } else {
-    fprintf(stderr, "Error opening note file '%s'.  errno: %d\n", filename, errno);
+    fprintf(stderr, "Error opening note file '%s'.  errno: %d\n",
+            filename, errno);
   }
 
   free(filename);
@@ -346,35 +391,46 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
   note->y = event->y;
   note->width = event->width;
   note->height = event->height;
-  note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window), GDK_WINDOW_XID(window->window));
+  note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window),
+                                  GDK_WINDOW_XID(window->window));
   save_note(window, note);
   return FALSE;
 }
 
 void bar_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 {
-  gtk_window_begin_move_drag(GTK_WINDOW(note->window), event->button, event->x_root, event->y_root, event->time);
+  gtk_window_begin_move_drag(GTK_WINDOW(note->window),
+                             event->button,
+                             event->x_root,
+                             event->y_root,
+                             event->time);
 }
 
 void resize_button_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 {
-  gtk_window_begin_resize_drag(GTK_WINDOW(note->window), GDK_WINDOW_EDGE_SOUTH_EAST, event->button, event->x_root, event->y_root, event->time);
+  gtk_window_begin_resize_drag(GTK_WINDOW(note->window),
+                               GDK_WINDOW_EDGE_SOUTH_EAST,
+                               event->button,
+                               event->x_root,
+                               event->y_root,
+                               event->time);
 }
 
 void delete_button_pressed(GtkWidget *widget, GdkEventButton *event, GtkWidget *window)
 {
   if(event->button != 1) return;
-
   gtk_widget_destroy(window);
 }
 
 void main_button_pressed(GtkWidget *widget, GdkEventButton *event, gpointer user_data)
 {
   if(event->button == 1) {
-    //create_note(NULL, &color_schemes[0]);
+    /* Left click toggles visibility of all notes */
     toggle_notes_visibility();
   } else if(event->button == 3) {
-    gtk_menu_popup(GTK_MENU(user_data), NULL, NULL, NULL, NULL, event->button, event->time);
+    /* Right click shows the color menu to create a new note */
+    gtk_menu_popup(GTK_MENU(user_data), NULL, NULL, NULL, NULL,
+                   event->button, event->time);
   }
 }
 
@@ -394,7 +450,6 @@ void create_note(Note *old_note, ColorScheme *scheme)
   GdkPixmap *resize_button_pixmap;
   GdkBitmap *resize_button_mask;
   GtkTextBuffer *text_buffer;
-
   Note *note;
 
   note = old_note ? old_note : malloc(sizeof(Note));
@@ -432,13 +487,21 @@ void create_note(Note *old_note, ColorScheme *scheme)
   bottom_bar = gtk_label_new("");
   gtk_widget_set_size_request(bottom_bar, -1, 8);
 
-  delete_button_pixmap = gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap, &delete_button_mask, NULL, delete_button_xpm);
-  delete_button = gtk_image_new_from_pixmap(delete_button_pixmap, delete_button_mask);
+  delete_button_pixmap =
+    gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap,
+                                          &delete_button_mask, NULL,
+                                          delete_button_xpm);
+  delete_button = gtk_image_new_from_pixmap(delete_button_pixmap,
+                                            delete_button_mask);
   note->delete_button_box = gtk_event_box_new();
   gtk_widget_set_size_request(note->delete_button_box, 10, 10);
 
-  resize_button_pixmap = gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap, &resize_button_mask, NULL, resize_button_xpm);
-  resize_button = gtk_image_new_from_pixmap(resize_button_pixmap, resize_button_mask);
+  resize_button_pixmap =
+    gdk_pixmap_colormap_create_from_xpm_d(NULL, colormap,
+                                          &resize_button_mask, NULL,
+                                          resize_button_xpm);
+  resize_button = gtk_image_new_from_pixmap(resize_button_pixmap,
+                                            resize_button_mask);
   note->resize_button_box = gtk_event_box_new();
 
   set_note_color(note, note->scheme);
@@ -447,11 +510,13 @@ void create_note(Note *old_note, ColorScheme *scheme)
   gtk_container_add(GTK_CONTAINER(note->top_bar_box), top_bar);
   gtk_container_add(GTK_CONTAINER(note->delete_button_box), delete_button);
   gtk_container_add(GTK_CONTAINER(note->resize_button_box), resize_button);
+
   gtk_box_pack_start(GTK_BOX(top_hbox), note->top_bar_box, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(top_hbox), note->delete_button_box, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(mid_hbox), note->text_widget, TRUE, TRUE, 2);
   gtk_box_pack_start(GTK_BOX(bottom_hbox), bottom_bar, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(bottom_hbox), note->resize_button_box, FALSE, FALSE, 0);
+
   gtk_box_pack_start(GTK_BOX(vbox), top_hbox, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(vbox), mid_hbox, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(vbox), bottom_hbox, FALSE, FALSE, 0);
@@ -459,22 +524,33 @@ void create_note(Note *old_note, ColorScheme *scheme)
   gtk_widget_show_all(window);
 
   if(old_note) {
-    set_workspace(GDK_WINDOW_XDISPLAY(window->window), GDK_WINDOW_XID(window->window), old_note->workspace);
+    /* If this note came from disk, restore workspace & geometry */
+    set_workspace(GDK_WINDOW_XDISPLAY(window->window),
+                  GDK_WINDOW_XID(window->window),
+                  old_note->workspace);
     gtk_window_resize(GTK_WINDOW(window), old_note->width, old_note->height);
     gtk_window_move(GTK_WINDOW(window), old_note->x, old_note->y);
   } else {
     gtk_window_get_position(GTK_WINDOW(window), &(note->x), &(note->y));
     gtk_window_get_size(GTK_WINDOW(window), &(note->width), &(note->height));
-    note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window), GDK_WINDOW_XID(window->window));
+    note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window),
+                                    GDK_WINDOW_XID(window->window));
   }
 
-  g_signal_connect(G_OBJECT(window), "destroy", G_CALLBACK(delete_note), note);
-  g_signal_connect(G_OBJECT(window), "configure-event", G_CALLBACK(note_configure_event), note);
-  g_signal_connect(G_OBJECT(note->delete_button_box), "button-press-event", G_CALLBACK(delete_button_pressed), window);
-  g_signal_connect(G_OBJECT(note->resize_button_box), "button-press-event", G_CALLBACK(resize_button_pressed), note);
-  g_signal_connect(G_OBJECT(text_buffer), "changed", G_CALLBACK(save_note), note);
-  g_signal_connect(G_OBJECT(note->top_bar_box), "button-press-event", G_CALLBACK(bar_pressed), note);
-  g_signal_connect(G_OBJECT(note->text_widget), "populate-popup", G_CALLBACK(populate_note_popup), note);
+  g_signal_connect(G_OBJECT(window), "destroy",
+                   G_CALLBACK(delete_note), note);
+  g_signal_connect(G_OBJECT(window), "configure-event",
+                   G_CALLBACK(note_configure_event), note);
+  g_signal_connect(G_OBJECT(note->delete_button_box), "button-press-event",
+                   G_CALLBACK(delete_button_pressed), window);
+  g_signal_connect(G_OBJECT(note->resize_button_box), "button-press-event",
+                   G_CALLBACK(resize_button_pressed), note);
+  g_signal_connect(G_OBJECT(text_buffer), "changed",
+                   G_CALLBACK(save_note), note);
+  g_signal_connect(G_OBJECT(note->top_bar_box), "button-press-event",
+                   G_CALLBACK(bar_pressed), note);
+  g_signal_connect(G_OBJECT(note->text_widget), "populate-popup",
+                   G_CALLBACK(populate_note_popup), note);
 }
 
 void read_old_notes()
@@ -491,11 +567,11 @@ void read_old_notes()
 
   rewinddir(dir);
   while((entry = readdir(dir)) != NULL) {
-    /* Check if it is a valid note name */
+    /* Check if it is a valid note name (all digits) */
     for(i=0; entry->d_name[i]; i++) {
       if(entry->d_name[i] < '0' || entry->d_name[i] > '9') break;
     }
-    if(i < strlen(entry->d_name)) continue;
+    if(i < (int)strlen(entry->d_name)) continue;
 
     note = malloc(sizeof(Note));
     if(!note) {
@@ -510,9 +586,10 @@ void read_old_notes()
 
     if(fscanf(file, "%d,%d,%d,%d,%d,%d,",
               &(note->x), &(note->y), &(note->width),
-              &(note->height), &(note->workspace), &reserved2) < 6) {
-      fprintf(stderr, "Failed to parse note '%s': "
-              "too few values.", entry->d_name);
+              &(note->height), &(note->workspace), &reserved2) < 6)
+    {
+      fprintf(stderr, "Failed to parse note '%s': too few values.",
+              entry->d_name);
       continue;
     }
 
@@ -580,7 +657,9 @@ void populate_note_popup(GtkTextView *entry, GtkMenu *menu, Note *note)
     gtk_box_pack_start(GTK_BOX(hbox), label, TRUE, TRUE, 0);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(color_menu), item);
-    g_signal_connect(G_OBJECT(item), "activate", G_CALLBACK(set_current_note_color), &color_schemes[i]);
+    g_signal_connect(G_OBJECT(item), "activate",
+                     G_CALLBACK(set_current_note_color),
+                     &color_schemes[i]);
   }
 
   gtk_widget_show_all(GTK_WIDGET(menu));
