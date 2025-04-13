@@ -62,7 +62,20 @@ void usage()
  * ------------------------------------------------------------------------- */
 static void toggle_notes_visibility(void)
 {
+    /* Check if any notes are visible - if so, we'll hide all notes */
+    gboolean any_visible = FALSE;
+    for (GList *l = all_notes; l != NULL; l = l->next) {
+        Note *n = (Note *)l->data;
+        if (!n) continue;
+
+        if (gtk_widget_get_visible(n->window)) {
+            any_visible = TRUE;
+            break;
+        }
+    }
+    /* Set notes_visible based on current state, not just toggle */
     notes_visible = !notes_visible;
+    notes_visible = !any_visible;
 
     for (GList *l = all_notes; l != NULL; l = l->next) {
         Note *n = (Note *)l->data;
@@ -85,6 +98,7 @@ static void toggle_notes_visibility(void)
         }
     }
 }
+
 
 int main(int argc, char *argv[])
 {
