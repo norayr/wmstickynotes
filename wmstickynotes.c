@@ -261,6 +261,8 @@ void delete_note(GtkWidget *widget, Note *note)
 {
   char *filename;
 
+  all_notes = g_list_remove(all_notes, note);
+
   if(store_notes) {
     asprintf(&filename, "%d", note->id);
     if(unlink(filename)) {
