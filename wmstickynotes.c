@@ -82,6 +82,15 @@ static void toggle_notes_visibility(void)
         if (!n) continue;
 
         if (notes_visible) {
+            /* Block the configure-event signal temporarily to prevent position drift */
+            gulong handler_id = g_signal_handler_find(n->window, 
+                                                     G_SIGNAL_MATCH_FUNC,
+                                                     0, 0, NULL, 
+                                                     note_configure_event, NULL);
+            if (handler_id) {
+                g_signal_handler_block(n->window, handler_id);
+            }
+            
             /* 1) Show (map) the note first */
             gtk_widget_show(n->window);
 
@@ -93,12 +102,22 @@ static void toggle_notes_visibility(void)
             /* 3) Finally, restore exact geometry (x, y, width, height) */
             gtk_window_move(GTK_WINDOW(n->window), n->x, n->y);
             gtk_window_resize(GTK_WINDOW(n->window), n->width, n->height);
+            
+            /* Unblock the signal handler */
+            if (handler_id) {
+                g_signal_handler_unblock(n->window, handler_id);
+            }
         } else {
+            /* When hiding, save the current position first */
+            gtk_window_get_position(GTK_WINDOW(n->window), &(n->x), &(n->y));
+            gtk_window_get_size(GTK_WINDOW(n->window), &(n->width), &(n->height));
+            /* Save to disk */
+            save_note(n->window, n);
+            /* Now hide the note */
             gtk_widget_hide(n->window);
         }
     }
 }
-
 
 int main(int argc, char *argv[])
 {
