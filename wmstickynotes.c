@@ -420,10 +420,32 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
   gtk_window_get_position(GTK_WINDOW(window), &note->x, &note->y);
   note->width = event->width;
   note->height = event->height;
-  note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window),
-                                  GDK_WINDOW_XID(window->window));
+  //note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window),
+  //                                GDK_WINDOW_XID(window->window));
   save_note(window, note);
   return FALSE;
+}
+
+static GdkFilterReturn note_workspace_filter(GdkXEvent *xevent, GdkEvent *event, gpointer data)
+{
+  XPropertyEvent *xprop = (XPropertyEvent *)xevent;
+  Note *note = (Note *)data;
+
+  if (xprop->type != PropertyNotify)
+    return GDK_FILTER_CONTINUE;
+
+  Display *disp = xprop->display;
+  Atom net_wm_desktop = XInternAtom(disp, "_NET_WM_DESKTOP", False);
+  Atom win_workspace  = XInternAtom(disp, "_WIN_WORKSPACE",  False);
+
+  if (xprop->atom == net_wm_desktop || xprop->atom == win_workspace) {
+    int ws = get_workspace(disp, xprop->window);
+    if (ws != note->workspace) {
+      note->workspace = ws;
+      save_note(note->window, note);
+    }
+  }
+  return GDK_FILTER_CONTINUE;
 }
 
 void bar_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
@@ -580,6 +602,10 @@ void create_note(Note *old_note, ColorScheme *scheme)
                    G_CALLBACK(bar_pressed), note);
   g_signal_connect(G_OBJECT(note->text_widget), "populate-popup",
                    G_CALLBACK(populate_note_popup), note);
+  gdk_window_set_events(window->window,
+                        gdk_window_get_events(window->window) | GDK_PROPERTY_CHANGE_MASK);
+  gdk_window_add_filter(window->window, note_workspace_filter, note);
+
 }
 
 void read_old_notes()
