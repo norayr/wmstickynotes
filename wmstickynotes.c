@@ -417,8 +417,7 @@ void save_note(GtkWidget *widget, Note *note)
 
 gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note *note)
 {
-  note->x = event->x;
-  note->y = event->y;
+  gtk_window_get_position(GTK_WINDOW(window), &note->x, &note->y);
   note->width = event->width;
   note->height = event->height;
   note->workspace = get_workspace(GDK_WINDOW_XDISPLAY(window->window),
