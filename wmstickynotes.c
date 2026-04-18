@@ -44,6 +44,7 @@ Note *current_note;
 /* List of all notes, plus a toggle for visibility */
 static GList *all_notes = NULL;
 static gboolean notes_visible = TRUE;
+int get_workspace(Display *disp, Window win);
 
 void usage()
 {
