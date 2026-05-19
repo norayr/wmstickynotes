@@ -44,6 +44,7 @@ Note *current_note;
 /* List of all notes, plus a toggle for visibility */
 static GList *all_notes = NULL;
 static gboolean notes_visible = TRUE;
+static gboolean suppress_geometry_save = FALSE;
 int get_workspace(Display *disp, Window win);
 
 void usage()
@@ -92,6 +93,8 @@ static void toggle_notes_visibility(void)
                 g_signal_handler_block(n->window, handler_id);
             }
 
+            suppress_geometry_save = TRUE;
+
             /* 1) Show (map) the note first */
             gtk_widget_show(n->window);
 
@@ -103,6 +106,11 @@ static void toggle_notes_visibility(void)
             /* 3) Finally, restore exact geometry (x, y, width, height) */
             gtk_window_move(GTK_WINDOW(n->window), n->x, n->y);
             gtk_window_resize(GTK_WINDOW(n->window), n->width, n->height);
+
+            while (gtk_events_pending())
+                gtk_main_iteration();
+
+            suppress_geometry_save = FALSE;
 
             /* Unblock the signal handler */
             if (handler_id) {
@@ -419,6 +427,10 @@ void save_note(GtkWidget *widget, Note *note)
 
 gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note *note)
 {
+  if(suppress_geometry_save) {
+    return FALSE;
+  }
+
   gtk_window_get_position(GTK_WINDOW(window), &note->x, &note->y);
   note->width = event->width;
   note->height = event->height;
@@ -556,11 +568,18 @@ void create_note(Note *old_note, ColorScheme *scheme)
 
   if(old_note) {
     /* If this note came from disk, restore workspace & geometry */
+    suppress_geometry_save = TRUE;
+
     set_workspace(GDK_WINDOW_XDISPLAY(window->window),
                   GDK_WINDOW_XID(window->window),
                   old_note->workspace);
     gtk_window_resize(GTK_WINDOW(window), old_note->width, old_note->height);
     gtk_window_move(GTK_WINDOW(window), old_note->x, old_note->y);
+
+    while (gtk_events_pending())
+      gtk_main_iteration();
+
+    suppress_geometry_save = FALSE;
   } else {
     gtk_window_get_position(GTK_WINDOW(window), &(note->x), &(note->y));
     gtk_window_get_size(GTK_WINDOW(window), &(note->width), &(note->height));
