@@ -44,9 +44,11 @@ Note *current_note;
 /* List of all notes, plus a toggle for visibility */
 static GList *all_notes = NULL;
 static gboolean notes_visible = TRUE;
+
+/* True only while wmstickynotes itself is restoring note geometry. */
 static gboolean suppress_geometry_save = FALSE;
+
 int get_workspace(Display *disp, Window win);
-static gboolean restore_note_geometry_idle(gpointer data);
 
 void usage()
 {
@@ -107,9 +109,6 @@ static void toggle_notes_visibility(void)
             /* 3) Finally, restore exact geometry (x, y, width, height) */
             gtk_window_move(GTK_WINDOW(n->window), n->x, n->y);
             gtk_window_resize(GTK_WINDOW(n->window), n->width, n->height);
-
-            while (gtk_events_pending())
-                gtk_main_iteration();
 
             suppress_geometry_save = FALSE;
 
@@ -426,31 +425,9 @@ void save_note(GtkWidget *widget, Note *note)
   g_free(text);
 }
 
-static gboolean restore_note_geometry_idle(gpointer data)
-{
-  Note *note = (Note *)data;
-
-  if(!note || !note->window || !GTK_IS_WIDGET(note->window)) {
-    return FALSE;
-  }
-
-  suppress_geometry_save = TRUE;
-
-  set_workspace(GDK_WINDOW_XDISPLAY(note->window->window),
-                GDK_WINDOW_XID(note->window->window),
-                note->workspace);
-  gtk_window_move(GTK_WINDOW(note->window), note->x, note->y);
-  gtk_window_resize(GTK_WINDOW(note->window), note->width, note->height);
-
-  suppress_geometry_save = FALSE;
-
-  return FALSE;
-}
-
 gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note *note)
 {
-  int new_x;
-  int new_y;
+  int new_x, new_y;
 
   if(suppress_geometry_save) {
     return FALSE;
@@ -459,16 +436,12 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
   gtk_window_get_position(GTK_WINDOW(window), &new_x, &new_y);
 
   /*
-   * After suspend/resume or monitor hotplug, Window Maker/GTK can report
-   * a temporary configure position of 0,0 for already-placed notes.  Do not
-   * let that transient position overwrite the stored note file.
-   *
-   * This intentionally means an existing note whose saved position is not
-   * 0,0 cannot be moved exactly to 0,0 and saved in one step.  That is much
-   * safer than losing all note positions after resume.
+   * After suspend/resume or monitor reconfiguration, Window Maker/GTK may
+   * report an existing note at 0,0.  Do not persist that transient value.
+   * Do not move the window here; moving from inside configure-event can cause
+   * slow configure loops and can fight the window manager during recovery.
    */
   if(new_x == 0 && new_y == 0 && (note->x != 0 || note->y != 0)) {
-    g_idle_add(restore_note_geometry_idle, note);
     return FALSE;
   }
 
@@ -610,18 +583,11 @@ void create_note(Note *old_note, ColorScheme *scheme)
 
   if(old_note) {
     /* If this note came from disk, restore workspace & geometry */
-    suppress_geometry_save = TRUE;
-
     set_workspace(GDK_WINDOW_XDISPLAY(window->window),
                   GDK_WINDOW_XID(window->window),
                   old_note->workspace);
     gtk_window_resize(GTK_WINDOW(window), old_note->width, old_note->height);
     gtk_window_move(GTK_WINDOW(window), old_note->x, old_note->y);
-
-    while (gtk_events_pending())
-      gtk_main_iteration();
-
-    suppress_geometry_save = FALSE;
   } else {
     gtk_window_get_position(GTK_WINDOW(window), &(note->x), &(note->y));
     gtk_window_get_size(GTK_WINDOW(window), &(note->width), &(note->height));
