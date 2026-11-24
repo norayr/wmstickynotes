@@ -61,6 +61,12 @@ static gboolean suppress_geometry_save = FALSE;
 static Note *user_geometry_note = NULL;
 static guint user_geometry_clear_timeout = 0;
 
+static gboolean get_workspace_property(Display *disp, Window win,
+                                       const char *name, int *workspace);
+static gboolean note_property_notify_event(GtkWidget *window,
+                                           GdkEventProperty *event,
+                                           Note *note);
+
 static gboolean clear_user_geometry_note(gpointer data)
 {
   if(user_geometry_note == (Note *)data) {
@@ -109,6 +115,35 @@ void usage()
  * Toggle the visibility of all existing notes. Under Window Maker, it often
  * helps to map the note FIRST, then set workspace, then move/resize.
  * ------------------------------------------------------------------------- */
+static void refresh_note_workspace(Note *note)
+{
+  Display *disp;
+  Window win;
+  int workspace;
+
+  if(!note->window || !note->window->window) {
+    return;
+  }
+
+  disp = GDK_WINDOW_XDISPLAY(note->window->window);
+  win = GDK_WINDOW_XID(note->window->window);
+
+  if(!get_workspace_property(disp, win, "_NET_WM_DESKTOP", &workspace) ||
+     (unsigned int)workspace == 0xffffffffu)
+  {
+    if(!get_workspace_property(disp, win, "_WIN_WORKSPACE", &workspace)) {
+      return;
+    }
+  }
+
+  if(workspace == note->workspace) {
+    return;
+  }
+
+  note->workspace = workspace;
+  save_note(note->window, note);
+}
+
 static void toggle_notes_visibility(void)
 {
     /* Check if any notes are visible - if so, we'll hide all notes */
@@ -153,7 +188,13 @@ static void toggle_notes_visibility(void)
              * Do not save on hide.  Hiding/remapping after suspend or monitor
              * changes can generate bogus geometry/workspace values.  Geometry
              * is already saved when the user actually moves/resizes/types.
+             *
+             * The workspace, however, is owned by the window manager and can
+             * change without any configure event when the user moves the note
+             * through the window menu.  Read it back before unmapping so the
+             * note reappears on the workspace where it was hidden.
              */
+            refresh_note_workspace(n);
             gtk_widget_hide(n->window);
         }
     }
@@ -336,48 +377,70 @@ void delete_note(GtkWidget *widget, Note *note)
   free(note);
 }
 
-int get_workspace(Display *disp, Window win)
+static gboolean get_workspace_property(Display *disp, Window win,
+                                       const char *name, int *workspace)
 {
   Atom prop_name;
   Atom ret_type;
   int ret_format;
   unsigned long ret_nitems;
   unsigned long ret_bytes_after;
-  unsigned char *ret_prop;
-  int workspace = 0;
+  unsigned char *ret_prop = NULL;
+  gboolean found = FALSE;
 
-  prop_name = XInternAtom(disp, "_NET_WM_DESKTOP", False);
+  prop_name = XInternAtom(disp, name, False);
+  if(prop_name == None) {
+    return FALSE;
+  }
+
   if(XGetWindowProperty(disp, win, prop_name, 0, 1, False, XA_CARDINAL,
                         &ret_type, &ret_format, &ret_nitems,
                         &ret_bytes_after, &ret_prop) != Success)
   {
-    prop_name = XInternAtom(disp, "_WIN_WORKSPACE", False);
-    if(XGetWindowProperty(disp, win, prop_name, 0, 1, False,
-                          XA_CARDINAL, &ret_type, &ret_format,
-                          &ret_nitems, &ret_bytes_after,
-                          &ret_prop) != Success)
-    {
-      return 0;
+    return FALSE;
+  }
+
+  if(ret_type == XA_CARDINAL && ret_prop && ret_nitems > 0) {
+    switch(ret_format) {
+    case 8:
+      *workspace = (int8_t)(*ret_prop);
+      found = TRUE;
+      break;
+    case 16:
+      *workspace = (int16_t)(*ret_prop);
+      found = TRUE;
+      break;
+    case 32:
+      *workspace = (int32_t)(*ret_prop);
+      found = TRUE;
+      break;
     }
   }
 
-  if(ret_type == XA_CARDINAL) {
-    switch(ret_format) {
-    case 8:
-      workspace = (int8_t)(*ret_prop);
-      break;
-    case 16:
-      workspace = (int16_t)(*ret_prop);
-      break;
-    case 32:
-      workspace = (int32_t)(*ret_prop);
-      break;
-    default:
+  if(ret_prop) {
+    XFree(ret_prop);
+  }
+
+  return found;
+}
+
+int get_workspace(Display *disp, Window win)
+{
+  int workspace = 0;
+
+  /*
+   * A missing _NET_WM_DESKTOP is not an X error: XGetWindowProperty succeeds
+   * with a None type.  Fall back to the Window Maker property explicitly
+   * instead of relying on the request itself to fail.
+   */
+  if(!get_workspace_property(disp, win, "_NET_WM_DESKTOP", &workspace) ||
+     (unsigned int)workspace == 0xffffffffu)
+  {
+    if(!get_workspace_property(disp, win, "_WIN_WORKSPACE", &workspace)) {
       workspace = 0;
     }
   }
 
-  XFree(ret_prop);
   return workspace;
 }
 
@@ -525,6 +588,52 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
   return FALSE;
 }
 
+/*
+ * Moving a window to another workspace changes its _NET_WM_DESKTOP (and
+ * possibly _WIN_WORKSPACE) property, but generates no configure event.  Track
+ * those changes so note->workspace always reflects where the note really is.
+ */
+static gboolean note_property_notify_event(GtkWidget *window,
+                                           GdkEventProperty *event,
+                                           Note *note)
+{
+  GdkAtom desktop_atom;
+  GdkAtom workspace_atom;
+  const char *name;
+  int workspace;
+
+  if(event->state != GDK_PROPERTY_NEW_VALUE) {
+    return FALSE;
+  }
+
+  desktop_atom = gdk_atom_intern("_NET_WM_DESKTOP", FALSE);
+  workspace_atom = gdk_atom_intern("_WIN_WORKSPACE", FALSE);
+
+  if(event->atom == desktop_atom) {
+    name = "_NET_WM_DESKTOP";
+  } else if(event->atom == workspace_atom) {
+    name = "_WIN_WORKSPACE";
+  } else {
+    return FALSE;
+  }
+
+  if(!get_workspace_property(GDK_WINDOW_XDISPLAY(window->window),
+                             GDK_WINDOW_XID(window->window),
+                             name, &workspace))
+  {
+    return FALSE;
+  }
+
+  /* 0xffffffff means the window is on all workspaces ("sticky"). */
+  if((unsigned int)workspace == 0xffffffffu || workspace == note->workspace) {
+    return FALSE;
+  }
+
+  note->workspace = workspace;
+  save_note(window, note);
+  return FALSE;
+}
+
 void bar_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 {
   allow_user_geometry_save(note);
@@ -652,6 +761,10 @@ void create_note(Note *old_note, ColorScheme *scheme)
   gtk_box_pack_start(GTK_BOX(vbox), top_hbox, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(vbox), mid_hbox, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(vbox), bottom_hbox, FALSE, FALSE, 0);
+
+  gtk_widget_add_events(window, GDK_PROPERTY_CHANGE_MASK);
+  g_signal_connect(G_OBJECT(window), "property-notify-event",
+                   G_CALLBACK(note_property_notify_event), note);
 
   gtk_widget_show_all(window);
 
