@@ -52,51 +52,11 @@ static gboolean notes_visible = TRUE;
  */
 static gboolean suppress_geometry_save = FALSE;
 
-/*
- * Only save geometry changes that were initiated by the user dragging the
- * note bar or resize handle.  Window-manager remaps, hide/show, suspend/resume,
- * monitor changes, and workspace recovery also generate configure-event, but
- * those should not rewrite the note files.
- */
-static Note *user_geometry_note = NULL;
-static guint user_geometry_clear_timeout = 0;
-
 static gboolean get_workspace_property(Display *disp, Window win,
                                        const char *name, int *workspace);
 static gboolean note_property_notify_event(GtkWidget *window,
                                            GdkEventProperty *event,
                                            Note *note);
-
-static gboolean clear_user_geometry_note(gpointer data)
-{
-  if(user_geometry_note == (Note *)data) {
-    user_geometry_note = NULL;
-  }
-  user_geometry_clear_timeout = 0;
-  return FALSE;
-}
-
-static void allow_user_geometry_save(Note *note)
-{
-  user_geometry_note = note;
-
-  if(user_geometry_clear_timeout) {
-    g_source_remove(user_geometry_clear_timeout);
-  }
-
-  /* The WM may deliver the final configure-event after the button event. */
-  user_geometry_clear_timeout = g_timeout_add(2000, clear_user_geometry_note, note);
-}
-
-static void disallow_user_geometry_save(void)
-{
-  user_geometry_note = NULL;
-
-  if(user_geometry_clear_timeout) {
-    g_source_remove(user_geometry_clear_timeout);
-    user_geometry_clear_timeout = 0;
-  }
-}
 
 int get_workspace(Display *disp, Window win);
 
@@ -160,8 +120,7 @@ static void toggle_notes_visibility(void)
 
     notes_visible = !any_visible;
 
-    /* A hide/show operation is never a user geometry edit. */
-    disallow_user_geometry_save();
+    /* A hide/show operation is not a user geometry edit. */
     suppress_geometry_save = TRUE;
 
     for (GList *l = all_notes; l != NULL; l = l->next) {
@@ -548,6 +507,23 @@ void save_note(GtkWidget *widget, Note *note)
   g_free(text);
 }
 
+static gboolean geometry_intersects_screen(int x, int y, int width, int height)
+{
+  GdkScreen *screen = gdk_screen_get_default();
+  int screen_width;
+  int screen_height;
+
+  if(!screen) {
+    return TRUE;
+  }
+
+  screen_width = gdk_screen_get_width(screen);
+  screen_height = gdk_screen_get_height(screen);
+
+  return x < screen_width && y < screen_height &&
+         x + width > 0 && y + height > 0;
+}
+
 gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note *note)
 {
   int new_x, new_y;
@@ -556,23 +532,41 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
     return FALSE;
   }
 
+  gtk_window_get_position(GTK_WINDOW(window), &new_x, &new_y);
+
   /*
-   * Do not persist arbitrary configure events.  Window Maker/GTK produce them
-   * during hide/show, suspend/resume, monitor changes, workspace changes, and
-   * initial mapping.  Saving all of them is what caused notes to drift, resize,
-   * or jump to 0,0.
-   *
-   * Geometry is saved only for the note currently being dragged/resized by the
-   * user via our own title bar or resize handle.
+   * Window-manager remaps can briefly report degenerate sizes.  Never let
+   * those overwrite a real note size.
    */
-  if(user_geometry_note != note) {
+  if(event->width < 10 || event->height < 10) {
     return FALSE;
   }
 
-  gtk_window_get_position(GTK_WINDOW(window), &new_x, &new_y);
+  /*
+   * Restoring or mapping a note produces configure events with the geometry
+   * that was just requested.  Only persist actual changes.
+   */
+  if(new_x == note->x && new_y == note->y &&
+     event->width == note->width && event->height == note->height)
+  {
+    return FALSE;
+  }
 
-  /* Even during a user operation, don't persist a bogus transient 0,0. */
+  /*
+   * After suspend/resume or monitor reconfiguration, Window Maker/GTK may
+   * report an existing note at 0,0.  Do not persist that transient value.
+   */
   if(new_x == 0 && new_y == 0 && (note->x != 0 || note->y != 0)) {
+    return FALSE;
+  }
+
+  /*
+   * Window-manager recovery can also place notes completely outside the
+   * screen.  Do not save geometry that cannot be seen.
+   */
+  if(!geometry_intersects_screen(new_x, new_y,
+                                 event->width, event->height))
+  {
     return FALSE;
   }
 
@@ -580,9 +574,6 @@ gboolean note_configure_event(GtkWidget *window, GdkEventConfigure *event, Note 
   note->y = new_y;
   note->width = event->width;
   note->height = event->height;
-
-  /* Keep allowing saves until configure-events stop for a short time. */
-  allow_user_geometry_save(note);
 
   save_note(window, note);
   return FALSE;
@@ -636,8 +627,6 @@ static gboolean note_property_notify_event(GtkWidget *window,
 
 void bar_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 {
-  allow_user_geometry_save(note);
-
   gtk_window_begin_move_drag(GTK_WINDOW(note->window),
                              event->button,
                              event->x_root,
@@ -647,8 +636,6 @@ void bar_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 
 void resize_button_pressed(GtkWidget *widget, GdkEventButton *event, Note *note)
 {
-  allow_user_geometry_save(note);
-
   gtk_window_begin_resize_drag(GTK_WINDOW(note->window),
                                GDK_WINDOW_EDGE_SOUTH_EAST,
                                event->button,
